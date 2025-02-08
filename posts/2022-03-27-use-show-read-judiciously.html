@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8">
+        <meta http-equiv="x-ua-compatible" content="ie=edge">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>Euony.me - Use Show and Read judiciously</title>
+        <link rel="stylesheet" href="../css/default.css" />
+        <link rel="stylesheet" href="../css/syntax.css" />
+        <link rel="stylesheet" href="../css/syntax-overrides.css" />
+    </head>
+    <body>
+        <header>
+            <div class="logo">
+                <a href="../">EUONY.ME</a>
+            </div>
+            <nav>
+                <a href="../">Home</a>
+                <a href="../about.html">About</a>
+                <a href="../archive.html">Blog</a>
+                <a href="../contact.html">Contact</a>
+            </nav>
+        </header>
+
+        <main role="main">
+            <h1>Use Show and Read judiciously</h1>
+            <article>
+    <section class="header">
+        Posted on March 27, 2022
+        
+    </section>
+    <section>
+        <h2 id="read-instances-typechecks-but-doesnt-work">Read instances: typechecks, but doesn’t work</h2>
+<p>One of the commonly admitted advantages of Haskell and its powerful type system is ability to refactor programs in a safe manner. Indeed, by using thoroughly defined types and just by leveraging the easiness of introducing zero run-time cost <code>newtype</code>s, we can eliminate a whole class of errors caused by representing many different things by means of one and the same type.</p>
+<p>That being said, we should exercise extra precautions when it comes to munging data at the boundaries of an application, where everything likely gets a representation based on very basic types, most often <code>String</code> (or more probably <code>Text</code>).</p>
+<p>Consider the following example of reading an environment variable, taken from a real production codebase:</p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="ot">pgPort ::</span> <span class="dt">Word16</span></span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a>pgPort <span class="ot">=</span> fromMaybe <span class="dv">5432</span> <span class="op">$</span> readMaybe <span class="op">=&lt;&lt;</span> lookupEnv <span class="st">&quot;PG_PORT&quot;</span></span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a><span class="ot">lookupEnv ::</span> <span class="dt">String</span> <span class="ot">-&gt;</span> <span class="dt">Maybe</span> <span class="dt">String</span></span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a>lookupEnv <span class="ot">=</span> <span class="op">...</span></span></code></pre></div>
+<p>Someone had to move from <code>Word16</code> to <code>String</code> here for some reason, and came up with these lines, having done just mechanical changes:</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="ot">pgPort ::</span> <span class="dt">String</span></span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>pgPort <span class="ot">=</span> fromMaybe <span class="st">&quot;5432&quot;</span> <span class="op">$</span> readMaybe <span class="op">=&lt;&lt;</span> lookupEnv <span class="st">&quot;PG_PORT&quot;</span></span></code></pre></div>
+<p>While this code compiles, it doesn’t work as expected. Reading a <code>String</code> will fail unless the value is properly quoted, but no one will expect this being the case when setting a value of an environment variable. As a result, you most probably will get the default value regardless what has been set:</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> readMaybe <span class="st">&quot;5432&quot;</span><span class="ot"> ::</span> <span class="dt">Maybe</span> <span class="dt">String</span></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a><span class="dt">Nothing</span></span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> readMaybe <span class="st">&quot;\&quot;5432\&quot;&quot;</span><span class="ot"> ::</span> <span class="dt">Maybe</span> <span class="dt">String</span></span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a><span class="dt">Just</span> <span class="st">&quot;5432&quot;</span></span></code></pre></div>
+<p>Remembering that <code>String</code> is effectively a list of <code>Char</code>s, so we also might specify the value as following (which is even more weird):</p>
+<pre><code>λ&gt; readMaybe &quot;['5','4','3','2']&quot; :: Maybe String
+Just &quot;5432&quot;</code></pre>
+<p>Albeit the fact that we can read <code>\"5432\"</code> and even <code>['5','4','3','2']</code>, but not <code>5432</code> as a <code>String</code> can be quite frustrating, the actual implementation of <code>Read</code> makes sense since it holds a <em>social contract</em> of being a counterpart to <code>Show</code>. But let sleeping dogs lie, and let’s take the way how <code>Show</code> is implemented without further questions. The rational behind quoting strings becomes obvious when <code>Text</code> is used as a part of a complex data type:</p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> <span class="kw">data</span> <span class="dt">Person</span> <span class="ot">=</span> <span class="dt">Person</span> <span class="dt">String</span> (<span class="dt">Maybe</span> <span class="dt">Int</span>) <span class="kw">deriving</span> <span class="dt">Show</span></span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> <span class="dt">Person</span> <span class="st">&quot;Jon Snow&quot;</span> (<span class="dt">Just</span> <span class="dv">42</span>)</span>
+<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a><span class="dt">Person</span> <span class="st">&quot;Jon Snow&quot;</span> (<span class="dt">Just</span> <span class="dv">42</span>)</span></code></pre></div>
+<p>The lesson we learned from this example is that it is intrinsically unsafe to use <code>Read</code> or at least some standard instances for parsing values. While it might work well when the string representation is aligned with what we expect, it can break abruptly when it is not. And indeed, <code>Show</code> and <code>Read</code> have been designed as means to debug programs in GHCi. But people will use them for other purposes in the wild, so keep your eyes open!</p>
+<h2 id="show-instances-multi-escaping">Show instances: multi-escaping</h2>
+<p>Another area which tends to make extensive use of <code>Show</code> is logging. Once we expose a logging action in terms of <code>Show</code>, which means we handle a value using <code>show</code>, we become responsible for cases when someone calls another <code>show</code> from <code>Text</code> / <code>String</code> instance before our call, leading to somewhat ugly log entries which are tricky to parse correctly:</p>
+<div class="sourceCode" id="cb6"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a>λ<span class="op">&gt;</span> <span class="fu">show</span> <span class="op">$</span> <span class="fu">show</span> <span class="op">$</span> <span class="fu">show</span> <span class="st">&quot;some \&quot; payload&quot;</span></span>
+<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a><span class="st">&quot;\&quot;\\\&quot;\\\\\\\&quot;some \\\\\\\\\\\\\\\&quot; payload\\\\\\\&quot;\\\&quot;\&quot;&quot;</span></span></code></pre></div>
+<p>Using <code>Show</code> is believed to be highly contagious, and it is hard to get rid of it once it has been introduced and spread over the codebase. One of the options to go in cases like that might be using of the reflection to decide whether we have to call <code>show</code> again:</p>
+<div class="sourceCode" id="cb7"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="ot">logMessage ::</span> <span class="kw">forall</span> p <span class="op">.</span> (<span class="dt">Typeable</span> p, <span class="dt">Show</span> p)</span>
+<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a>           <span class="ot">=&gt;</span> <span class="dt">LogLevel</span> <span class="ot">-&gt;</span> payload <span class="ot">-&gt;</span> <span class="dt">Logger</span> ()</span>
+<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a>logMessage lvl tag <span class="ot">=</span> lift <span class="op">$</span> <span class="dt">LogMessage</span> lvl textPayload</span>
+<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a>  <span class="kw">where</span></span>
+<span id="cb7-5"><a href="#cb7-5" aria-hidden="true" tabindex="-1"></a><span class="ot">    textPayload ::</span> <span class="dt">Text</span></span>
+<span id="cb7-6"><a href="#cb7-6" aria-hidden="true" tabindex="-1"></a>    textPayload</span>
+<span id="cb7-7"><a href="#cb7-7" aria-hidden="true" tabindex="-1"></a>      <span class="op">|</span> <span class="dt">Just</span> <span class="dt">HRefl</span> <span class="ot">&lt;-</span> eqTypeRep (typeRep <span class="op">@</span>tag) (typeRep <span class="op">@</span><span class="dt">Text</span>  ) <span class="ot">=</span> tag</span>
+<span id="cb7-8"><a href="#cb7-8" aria-hidden="true" tabindex="-1"></a>      <span class="op">|</span> <span class="dt">Just</span> <span class="dt">HRefl</span> <span class="ot">&lt;-</span> eqTypeRep (typeRep <span class="op">@</span>tag) (typeRep <span class="op">@</span><span class="dt">String</span>) <span class="ot">=</span> toText tag</span>
+<span id="cb7-9"><a href="#cb7-9" aria-hidden="true" tabindex="-1"></a>      <span class="op">|</span> <span class="fu">otherwise</span> <span class="ot">=</span> <span class="fu">show</span> tag</span></code></pre></div>
+<p>So, again, we would better not use <code>Show</code>, but find other ways of transforming things to be logged into <code>Text</code> / <code>String</code> representation.</p>
+    </section>
+</article>
+
+        </main>
+
+        <footer>
+              email: <a href="hey@euony.me">hey@euony.me</a>
+            | <a href="https://github.com/euonymos">GitHub</a>
+            | <a href="https://www.linkedin.com/in/ilia-rodionov">LinkedIn</a>
+            | <a href="https://t.me/euonymenian">Telegram</a>
+            | <a href="https://x.com/iliarodionov">Twitter</a>
+        </footer>
+    </body>
+</html>
