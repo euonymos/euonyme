@@ -1,0 +1,5 @@
+/* Pandoc's code style overrides */
+
+pre.sourceCode {
+  padding: 5px;
+}
