@@ -2,7 +2,7 @@
 title: Contact
 ---
 
-The preferred way to reach our is [email](mailto:hey@euony.me).
+The preferred way to reach our is email: [hey@euony.me](mailto:hey@euony.me).
 
 You can find me on:
 
