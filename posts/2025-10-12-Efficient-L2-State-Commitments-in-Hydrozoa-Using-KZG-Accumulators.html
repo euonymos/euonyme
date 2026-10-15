@@ -36,12 +36,12 @@
 <p>This is where KZG accumulators become essential—representing the L2 UTXO state succinctly so it can be verified on-chain efficiently.</p>
 <h2 id="the-problem-representing-l2-utxo-state">The Problem: Representing L2 UTXO State</h2>
 <p>Layer 2 solutions face a fundamental challenge: how do you prove the current state of thousands of UTXOs to the Layer 1 blockchain without posting all of them on-chain? For Hydrozoa, every block on our L2 needs to create a succinct, verifiable representation of the entire UTXO set that can be efficiently verified by Cardano’s base layer.</p>
-<p>Traditional approaches like Merkle trees seem appealing at first—they provide logarithmic proof sizes and are well-understood. However, updating the tree structure is somewhat inconvenient: every time UTXOs are removed (when users withdraw to L1 in Hydrozoa’s rule-based regime—see <a href="https://cardano-hydrozoa.github.io/hydrozoa/hydrozoa.pdf">specification</a>), you must recalculate portions of the tree, update the root hash, and recompute many intermediate nodes—all of which must happen on-chain in the validator.</p>
-<p>We chose KZG commitments because they offer a crucial property: <strong>the membership proof itself is the new accumulator state</strong>. When users withdraw UTXOs from our L2:</p>
+<p>Traditional approaches like Merkle trees seem appealing at first—they provide logarithmic proof sizes and are well-understood. However, updating the tree structure is inconvenient: every time UTXOs are removed (when users withdraw to L1 in Hydrozoa’s rule-based regime—see <a href="https://cardano-hydrozoa.github.io/hydrozoa/hydrozoa.pdf">specification</a>), you must recalculate portions of the tree, update the root hash, and recompute many intermediate nodes—all of which must happen on-chain in the validator.</p>
+<p>We use KZG commitments because they offer a crucial property: <strong>the membership proof itself is the new accumulator state</strong>. When users withdraw UTXOs from our L2:</p>
 <ol type="1">
 <li>They provide a KZG proof that their UTXOs exist in the current accumulator</li>
 <li>L1 verifies this proof</li>
-<li>This proof becomes the new accumulator state with those UTXOs removed</li>
+<li>This proof then becomes the new accumulator state with those UTXOs removed</li>
 </ol>
 <p>No tree recalculation. No recomputing intermediate nodes. The proof and the state update are one and the same operation. Additionally, both the commitment and the proof are constant-size—just 48 bytes each (a single BLS12-381 G1 point)—regardless of how many UTXOs are in the set.</p>
 <p>However, KZG accumulators come with their own challenges: <strong>computing the commitment itself is expensive</strong> (every L2 block needs a fresh commitment representing the current UTXO set), and <strong>they require a trusted setup</strong>—a one-time ceremony to generate the cryptographic parameters needed for the scheme. As we’ll see, we address the setup requirement by leveraging Ethereum’s existing ceremony, while the commitment computation becomes the main bottleneck we need to optimize.</p>
@@ -64,7 +64,7 @@
 <li><strong>32,768 powers in G1</strong>: g₁^τ⁰, g₁^τ¹, g₁^τ², …, g₁^τ³²⁷⁶⁷</li>
 <li><strong>65 powers in G2</strong>: g₂^τ⁰, g₂^τ¹, g₂^τ², …, g₂^τ⁶⁴</li>
 </ul>
-<p>This allows us to support L2 UTXO sets with up to 32,000 UTXOs, which should be sufficient for most Hydrozoa heads in typical usage. And if the 32,000 limit becomes restrictive, we have ideas for expanding capacity while reusing the same setup parameters.</p>
+<p>This allows us to support L2 UTXO sets with up to 32,000 UTXOs, which should be sufficient for most Hydrozoa heads in typical usage. If the 32,000 limit becomes restrictive, we have ideas for expanding capacity while reusing the same setup parameters.</p>
 <h3 id="why-the-asymmetry">Why the Asymmetry?</h3>
 <p>You might wonder: why 32,768 elements in G1 but only 65 in G2? This design choice reflects where the computational bottlenecks actually occur in practice.</p>
 <p>In standard KZG schemes:</p>
@@ -73,14 +73,14 @@
 <li><strong>Verification uses G2</strong> for pairing checks - this happens less frequently</li>
 </ul>
 <p>Elliptic curve operations in G2 are roughly <strong>3× slower</strong> than in G1 on the BLS12-381 curve. By putting the large setup (32k elements) in G1, Ethereum optimized for the frequent operation (commitment computation) while keeping G2 small since verification happens rarely.</p>
-<p>This asymmetry is perfect for Hydrozoa’s needs: we compute commitments frequently (every minor block) but verification by L1 validators happens less often. We benefit from:</p>
+<p>This asymmetry is perfect for Hydrozoa’s needs: we compute commitments frequently (every minor block) but verification by L1 validators happens less often. This provides:</p>
 <ul>
 <li><strong>Fast G1 arithmetic</strong> for computing commitments</li>
 <li><strong>Large G1 setup</strong> supporting up to 32,768 UTXOs</li>
 <li><strong>Reusing battle-tested parameters</strong> from Ethereum’s ceremony</li>
 </ul>
 <h2 id="current-approach-the-mvp-strategy">Current Approach: The MVP Strategy</h2>
-<p>For our MVP, Hydrozoa targets L2 virtual ledgers with <strong>1,000-3,000 UTXOs</strong>. We’re using a straightforward but effective approach: rebuild the commitment from scratch for each block.</p>
+<p>For our MVP, Hydrozoa targets L2 virtual ledgers with <strong>1,000-3,000 UTXOs</strong>. We use a straightforward but effective approach: rebuild the commitment from scratch for each block.</p>
 <h3 id="the-commitment-pipeline">The Commitment Pipeline</h3>
 <p>Computing a KZG commitment for the UTXO set involves several steps:</p>
 <ol type="1">
@@ -110,8 +110,8 @@
 </ul>
 <p>The bottleneck is clear: building the polynomial has O(N²) complexity with our current naive implementation. For 1-3k UTXOs this is acceptable, but it won’t scale to larger sets.</p>
 <p><strong>Note on JVM optimizations</strong>: Hydrozoa is implemented in Scala using <a href="https://github.com/nau/scalus">Scalus</a>, a full-fledged Cardano development framework. Hydrozoa leverages Scalus’ ledger rules for its custom L2 ledger, uses it for building transactions, and uses Scalus for its on-chain scripts. One advantage of running on the JVM is that the Just-In-Time (JIT) compiler significantly optimizes repetitive calculations like hashing—our benchmarks show substantial improvements after warm-up iterations as the JVM optimizes hot code paths. This means that in production, where the same hashing operations occur frequently across many blocks, performance will be better than these cold-start benchmarks suggest.</p>
-<h3 id="near-term-optimization">Near-Term Optimization</h3>
-<p>The good news: we can easily improve hashing performance by computing hashes upfront when L2 transactions are first processed, storing them alongside UTXOs in the ledger state. This eliminates redundant hashing work, complementing the JIT optimizations mentioned above.</p>
+<h3 id="near-term-optimizations">Near-Term Optimizations</h3>
+<p>We can improve hashing performance by computing hashes upfront when L2 transactions are first processed, storing them alongside UTXOs in the ledger state. This eliminates redundant hashing work, complementing the JIT optimizations mentioned above.</p>
 <p>With this optimization, commitment time for 1,000 UTXOs drops to approximately <strong>350ms</strong>—entirely acceptable for L2 block production.</p>
 <p>If we need to further optimize the bottleneck steps (building the polynomial and evaluating the commitment) in the MVP phase, we have straightforward optimizations available:</p>
 <ul>
@@ -135,7 +135,7 @@
 <p>Here’s where we hit a constraint: the Ethereum ceremony only generated 65 powers in G2. This means the withdrawal polynomial is limited to degree 64, which practically restricts us to withdrawing around 60-65 UTXOs per transaction.</p>
 <p>For the MVP targeting heads with 1-3k UTXOs, this is acceptable—users can batch reasonable numbers of withdrawals. However, for larger-scale usage, this becomes a bottleneck.</p>
 <h3 id="the-need-for-efficient-primitives">The Need for Efficient Primitives</h3>
-<p>Plutus does have support for BLS12-381 curve operations, though they’re not as widely used in the ecosystem yet. More critically, efficient finite field arithmetic primitives are still needed.</p>
+<p>While Plutus has support for BLS12-381 curve operations, they are not yet widely used in the ecosystem. More critically, efficient finite field arithmetic primitives are still needed.</p>
 <h3 id="the-challenge-plutus-arithmetic-operations">The Challenge: Plutus Arithmetic Operations</h3>
 <p>KZG verification requires operations in finite fields—specifically, arithmetic modulo the large prime that defines the scalar field of the BLS12-381 curve. Unfortunately, Plutus currently lacks native support for modular arithmetic over large integers.</p>
 <p>This means we must implement these operations manually in Plutus script, which consumes significant execution budget and limits how many UTXOs can be verified per transaction.</p>
@@ -176,7 +176,7 @@
 <li><strong>Coefficient form</strong>: [a₀, a₁, a₂, …] representing a₀ + a₁x + a₂x² + …</li>
 <li><strong>Point-value form</strong>: [f(ω⁰), f(ω¹), f(ω²), …] the polynomial evaluated at special points</li>
 </ul>
-<p>In point-value form, multiplying and dividing polynomials becomes pointwise operations on the arrays. However, division in point-value form requires that divisor polynomials don’t evaluate to zero at the chosen points. We expect this can be managed through careful choice of evaluation points, or as a fallback, we can perform a full rebuild when a zero divisor is encountered. The BLS12-381 curve was specifically designed to support efficient NTT operations.</p>
+<p>In point-value form, multiplying and dividing polynomials becomes pointwise operations on the arrays. However, division in point-value form requires that divisor polynomials do not evaluate to zero at the chosen points. We expect this can be managed through careful choice of evaluation points, or as a fallback, we can perform a full rebuild when a zero divisor is encountered. The BLS12-381 curve was specifically designed to support efficient NTT operations.</p>
 <p>Our incremental approach would work like this:</p>
 <ol type="1">
 <li><p><strong>First block</strong>: Build initial polynomial and convert to point-value form using NTT</p></li>
